@@ -16,7 +16,18 @@
 
 #include <SFML/Network.hpp>
 
+// The generated header uses a C flexible array member (list_sets_resp.sets),
+// which MSVC flags as C4200 and this project promotes to an error via /WX.
+// The header must not be hand-edited (generated in tournament-reporter), so
+// silence the warning around the include only.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4200)
+#endif
 #include "Core/Slippi/relay_proto.h"
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 #include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
