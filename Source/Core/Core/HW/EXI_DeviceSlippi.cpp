@@ -10,7 +10,13 @@
 #include <SlippiLib/SlippiGame.h>
 
 #include <semver/include/semver200.h>
+#include <chrono>
+#include <cstdlib>
 #include <utility> // std::move
+
+#include <SFML/Network.hpp>
+
+#include "Core/Slippi/relay_proto.h"
 
 #include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
@@ -217,6 +223,18 @@ CEXISlippi::~CEXISlippi()
 	if (m_fileWriteThread.joinable())
 	{
 		m_fileWriteThread.join();
+	}
+
+	// Stop the relay forwarder thread; a round trip in flight delays this by
+	// its 3 second budget at most.
+	{
+		std::lock_guard<std::mutex> lock(relayMutex);
+		relayShutdown = true;
+	}
+	relayCondVar.notify_one();
+	if (relayThread.joinable())
+	{
+		relayThread.join();
 	}
 	m_slippiserver->endGame(true);
 
@@ -3583,6 +3601,12 @@ void CEXISlippi::DMAWrite(u32 _uAddr, u32 _uSize)
 
 void CEXISlippi::DMARead(u32 addr, u32 size)
 {
+	if (relayExiCmd == EXI_RELAY_POLL)
+	{
+		prepareRelayPollRead(addr, size);
+		return;
+	}
+
 	if (m_read_queue.empty())
 	{
 		ERROR_LOG(SLIPPI, "EXI SLIPPI DMARead: Empty");
@@ -3597,6 +3621,179 @@ void CEXISlippi::DMARead(u32 addr, u32 size)
 
 	// Copy buffer data to memory
 	Memory::CopyToEmu(addr, queueAddr, size);
+}
+
+// ---- Tournament relay forwarder ----
+//
+// Implements the fake relay EXI device for the tournament reporter
+// (tournament-reporter design.md section 9.3): the game's lbrelayexi.c sends
+// an immediate 4-byte command word (EXI_RELAY_REQ/POLL in the top byte,
+// values from Core/Slippi/relay_proto.h), then for REQ the request buffer via
+// EXIImmEx, and reads the poll response back with one EXI DMA read. The
+// forwarder ships the request to the relay over TCP on a worker thread (the
+// EXI handlers never block) and mirrors Nintendont's four-state machine:
+// RELAY_IDLE/BUSY/DONE/ERROR. One code path, no retries.
+
+// One TCP round trip: connect, send the request buffer, read the response
+// until the relay closes the connection (the relay serves one request per
+// connection and ends the socket after its response), all within a single
+// 3 second budget. Any failure is RELAY_ERROR.
+static bool relayDoRequest(const std::string &addr, const std::vector<u8> &req, std::vector<u8> *resp)
+{
+	auto colon = addr.rfind(':');
+	unsigned long port = colon == std::string::npos ? 0 : strtoul(addr.c_str() + colon + 1, nullptr, 10);
+	if (colon == std::string::npos || colon == 0 || port == 0 || port > 65535)
+	{
+		ERROR_LOG(SLIPPI, "Relay: bad SlippiRelayAddress '%s', want host:port", addr.c_str());
+		return false;
+	}
+	std::string host = addr.substr(0, colon);
+
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+	auto remainingMs = [&]() {
+		auto left = deadline - std::chrono::steady_clock::now();
+		return std::chrono::duration_cast<std::chrono::milliseconds>(left).count();
+	};
+
+	sf::TcpSocket socket;
+	if (socket.connect(host, static_cast<unsigned short>(port),
+	                   sf::milliseconds(static_cast<int>(remainingMs()))) != sf::Socket::Done)
+	{
+		ERROR_LOG(SLIPPI, "Relay: connect to %s failed", addr.c_str());
+		return false;
+	}
+	if (socket.send(req.data(), req.size()) != sf::Socket::Done)
+	{
+		ERROR_LOG(SLIPPI, "Relay: send to %s failed", addr.c_str());
+		return false;
+	}
+
+	sf::SocketSelector selector;
+	selector.add(socket);
+	for (;;)
+	{
+		auto ms = remainingMs();
+		if (ms <= 0 || !selector.wait(sf::milliseconds(static_cast<int>(ms))))
+		{
+			ERROR_LOG(SLIPPI, "Relay: response from %s timed out", addr.c_str());
+			return false;
+		}
+		char buf[4096];
+		std::size_t got = 0;
+		sf::Socket::Status status = socket.receive(buf, sizeof(buf), got);
+		if (status == sf::Socket::Done)
+			resp->insert(resp->end(), buf, buf + got);
+		else if (status == sf::Socket::Disconnected)
+			return true; // clean close = end of the one response
+		else if (status != sf::Socket::NotReady)
+		{
+			ERROR_LOG(SLIPPI, "Relay: receive from %s failed", addr.c_str());
+			return false;
+		}
+	}
+}
+
+void CEXISlippi::ImmWrite(u32 _uData, u32 _uSize)
+{
+	// Slippi's own commands only ever arrive through DMAWrite (TransferByte
+	// is a no-op), so a leading relay command word cannot shadow them.
+	if (relayExiCmd == EXI_RELAY_REQ)
+	{
+		for (u32 i = 0; i < _uSize; i++)
+			relayReqBuf.push_back(static_cast<u8>(_uData >> (24 - i * 8)));
+		return;
+	}
+	u8 cmd = static_cast<u8>(_uData >> 24);
+	if (relayExiCmd == 0 && _uSize == 4 && (cmd == EXI_RELAY_REQ || cmd == EXI_RELAY_POLL))
+	{
+		relayExiCmd = cmd;
+		relayReqBuf.clear();
+		return;
+	}
+	IEXIDevice::ImmWrite(_uData, _uSize);
+}
+
+void CEXISlippi::SetCS(int _iCS)
+{
+	// Called whenever our chip-select bit flips (EXI_Channel status writes),
+	// so every EXI transaction begins and ends here. A REQ dispatches on
+	// deselect; partial relay state never survives the transaction.
+	if (relayExiCmd == EXI_RELAY_REQ)
+		relayDispatchRequest();
+	relayExiCmd = 0;
+	relayReqBuf.clear();
+}
+
+void CEXISlippi::relayDispatchRequest()
+{
+	std::string addr = SConfig::GetInstance().m_strSlippiRelayAddr;
+	std::unique_lock<std::mutex> lock(relayMutex);
+	if (addr.empty() || relayReqBuf.size() < sizeof(struct relay_hdr))
+	{
+		ERROR_LOG(SLIPPI, "Relay: %s",
+		          addr.empty() ? "SlippiRelayAddress not set" : "request shorter than relay_hdr");
+		relayState = RELAY_ERROR;
+		relayRespBuf.clear();
+		return;
+	}
+	if (relayState == RELAY_BUSY)
+	{
+		// lbrelayexi allows one request in flight; a second one is a game bug.
+		ERROR_LOG(SLIPPI, "Relay: request while busy, dropped");
+		return;
+	}
+	relayWorkAddr = std::move(addr);
+	relayWorkBuf = relayReqBuf;
+	relayState = RELAY_BUSY;
+	relayHasWork = true;
+	if (!relayThread.joinable())
+		relayThread = std::thread(&CEXISlippi::relayThreadFunc, this);
+	lock.unlock();
+	relayCondVar.notify_one();
+}
+
+void CEXISlippi::relayThreadFunc()
+{
+	std::unique_lock<std::mutex> lock(relayMutex);
+	while (true)
+	{
+		relayCondVar.wait(lock, [&] { return relayHasWork || relayShutdown; });
+		if (relayShutdown)
+			return;
+		relayHasWork = false;
+		std::string addr = relayWorkAddr;
+		std::vector<u8> req = std::move(relayWorkBuf);
+		lock.unlock();
+
+		std::vector<u8> resp;
+		bool ok = relayDoRequest(addr, req, &resp);
+
+		lock.lock();
+		relayRespBuf = std::move(resp);
+		relayState = ok ? RELAY_DONE : RELAY_ERROR;
+	}
+}
+
+void CEXISlippi::prepareRelayPollRead(u32 addr, u32 size)
+{
+	// Read-back layout is lbRelayExi_PollBuf (melee decomp lbrelayexi.h):
+	// {u8 state, u8 pad[3], response bytes}. The response stays valid until
+	// the next request overwrites it.
+	if (size == 0)
+		return;
+	std::vector<u8> out(size, 0);
+	{
+		std::lock_guard<std::mutex> lock(relayMutex);
+		out[0] = relayState;
+		if (relayState == RELAY_DONE && size > 4 && !relayRespBuf.empty())
+		{
+			size_t n = relayRespBuf.size();
+			if (n > size - 4)
+				n = size - 4;
+			memcpy(&out[4], relayRespBuf.data(), n);
+		}
+	}
+	Memory::CopyToEmu(addr, out.data(), size);
 }
 
 // Configures (or reconfigures) the Jukebox by calling over the C FFI boundary.

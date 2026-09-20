@@ -170,6 +170,10 @@ struct SConfig : NonCopyable
 	int m_slippiNetplayPort;
 	bool m_slippiForceLanIp = false;
 	std::string m_slippiLanIp = "";
+	// Tournament relay forwarder (tournament-reporter design.md section 9.3):
+	// "host:port" of the LAN relay the EXI_RELAY_REQ/POLL commands are
+	// forwarded to. Empty = forwarder disabled; requests fail with RELAY_ERROR.
+	std::string m_strSlippiRelayAddr = "";
 	bool m_meleeUserIniBootstrapped = false;
 	bool m_blockingPipes = false;
 	bool m_coutEnabled = false;

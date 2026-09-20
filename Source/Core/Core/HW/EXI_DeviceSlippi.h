@@ -4,6 +4,10 @@
 
 #pragma once
 
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
 #include <SlippiLib/SlippiGame.h>
 
 #include "Common/CommonTypes.h"
@@ -34,6 +38,8 @@ class CEXISlippi : public IEXIDevice
 
 	void DMAWrite(u32 _uAddr, u32 _uSize) override;
 	void DMARead(u32 addr, u32 size) override;
+	void ImmWrite(u32 _uData, u32 _uSize) override;
+	void SetCS(int _iCS) override;
 
 	void ConfigureJukebox();
 	void SetJukeboxDolphinSystemVolume();
@@ -285,6 +291,28 @@ class CEXISlippi : public IEXIDevice
 	void prepareDelayResponse();
 	void preparePremadeTextLength(u8 *payload);
 	void preparePremadeTextLoad(u8 *payload);
+
+	// Tournament relay forwarder (tournament-reporter design.md section 9.3):
+	// forwards the fake relay EXI device's EXI_RELAY_REQ/POLL commands
+	// (Core/Slippi/relay_proto.h) to the LAN relay over TCP. The request
+	// arrives as an immediate command word + EXIImmEx data (see lbrelayexi.c
+	// in the melee decomp), never through the DMAWrite command dispatch.
+	u8 relayExiCmd = 0;           // exi_cmd of the current EXI transaction, 0 = none
+	std::vector<u8> relayReqBuf;  // request bytes accumulated from EXIImmEx
+	std::thread relayThread;
+	std::mutex relayMutex;
+	std::condition_variable relayCondVar;
+	// All of the below are guarded by relayMutex.
+	bool relayShutdown = false;
+	bool relayHasWork = false;
+	std::string relayWorkAddr;    // SlippiRelayAddress captured at dispatch
+	std::vector<u8> relayWorkBuf; // request handed to the thread
+	u8 relayState = 0;            // enum exi_poll_state (0 = RELAY_IDLE)
+	std::vector<u8> relayRespBuf; // relay_hdr + relay_resp + payload from the relay
+
+	void relayDispatchRequest();
+	void relayThreadFunc();
+	void prepareRelayPollRead(u32 addr, u32 size);
 
 	// helper functions
 	bool doesTagMatchInput(u8 *input, u8 inputLen, std::string tag);
