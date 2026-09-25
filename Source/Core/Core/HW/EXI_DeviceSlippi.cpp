@@ -3649,7 +3649,10 @@ void CEXISlippi::DMARead(u32 addr, u32 size)
 // until the relay closes the connection (the relay serves one request per
 // connection and ends the socket after its response), all within a single
 // 3 second budget. Any failure is RELAY_ERROR.
-static bool relayDoRequest(const std::string &addr, const std::vector<u8> &req, std::vector<u8> *resp)
+// ip/port receive the resolved relay address (host order) for exi_poll_hdr, as
+// far as the address parsed; they stay 0 when it did not.
+static bool relayDoRequest(const std::string &addr, const std::vector<u8> &req, std::vector<u8> *resp,
+                           u32 *ip, u16 *port_out)
 {
 	auto colon = addr.rfind(':');
 	unsigned long port = colon == std::string::npos ? 0 : strtoul(addr.c_str() + colon + 1, nullptr, 10);
@@ -3659,6 +3662,8 @@ static bool relayDoRequest(const std::string &addr, const std::vector<u8> &req, 
 		return false;
 	}
 	std::string host = addr.substr(0, colon);
+	*port_out = static_cast<u16>(port);
+	*ip = sf::IpAddress(host).toInteger();
 
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 	auto remainingMs = [&]() {
@@ -3777,10 +3782,14 @@ void CEXISlippi::relayThreadFunc()
 		lock.unlock();
 
 		std::vector<u8> resp;
-		bool ok = relayDoRequest(addr, req, &resp);
+		u32 ip = 0;
+		u16 port = 0;
+		bool ok = relayDoRequest(addr, req, &resp, &ip, &port);
 
 		lock.lock();
 		relayRespBuf = std::move(resp);
+		relayIp = ip;
+		relayPort = port;
 		relayState = ok ? RELAY_DONE : RELAY_ERROR;
 	}
 }
@@ -3788,20 +3797,32 @@ void CEXISlippi::relayThreadFunc()
 void CEXISlippi::prepareRelayPollRead(u32 addr, u32 size)
 {
 	// Read-back layout is lbRelayExi_PollBuf (melee decomp lbrelayexi.h):
-	// {u8 state, u8 pad[3], response bytes}. The response stays valid until
-	// the next request overwrites it.
+	// exi_poll_hdr {u8 state, u8 pad, u16 station, u32 relay_ip, u16 relay_port,
+	// u16 pad} (protocol.yaml), then the response bytes. Station is 0 in
+	// Dolphin (design R10); the relay address is the one the last request
+	// resolved. The response stays valid until the next request overwrites it.
 	if (size == 0)
 		return;
 	std::vector<u8> out(size, 0);
 	{
 		std::lock_guard<std::mutex> lock(relayMutex);
+		const size_t hdr = sizeof(struct exi_poll_hdr);
 		out[0] = relayState;
-		if (relayState == RELAY_DONE && size > 4 && !relayRespBuf.empty())
+		if (size >= hdr)
+		{
+			out[4] = static_cast<u8>(relayIp >> 24);
+			out[5] = static_cast<u8>(relayIp >> 16);
+			out[6] = static_cast<u8>(relayIp >> 8);
+			out[7] = static_cast<u8>(relayIp);
+			out[8] = static_cast<u8>(relayPort >> 8);
+			out[9] = static_cast<u8>(relayPort);
+		}
+		if (relayState == RELAY_DONE && size > hdr && !relayRespBuf.empty())
 		{
 			size_t n = relayRespBuf.size();
-			if (n > size - 4)
-				n = size - 4;
-			memcpy(&out[4], relayRespBuf.data(), n);
+			if (n > size - hdr)
+				n = size - hdr;
+			memcpy(&out[hdr], relayRespBuf.data(), n);
 		}
 	}
 	Memory::CopyToEmu(addr, out.data(), size);

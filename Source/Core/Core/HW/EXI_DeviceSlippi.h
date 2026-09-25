@@ -309,6 +309,8 @@ class CEXISlippi : public IEXIDevice
 	std::vector<u8> relayWorkBuf; // request handed to the thread
 	u8 relayState = 0;            // enum exi_poll_state (0 = RELAY_IDLE)
 	std::vector<u8> relayRespBuf; // relay_hdr + relay_resp + payload from the relay
+	u32 relayIp = 0;              // exi_poll_hdr.relay_ip: the resolved IPv4 of SlippiRelayAddress (host order)
+	u16 relayPort = 0;            // exi_poll_hdr.relay_port
 
 	void relayDispatchRequest();
 	void relayThreadFunc();
