@@ -4,6 +4,7 @@
 
 #include "Common/Assert.h"
 #include "Common/CommonPaths.h"
+#include "Common/CommonFuncs.h"
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
 #include "Common/NandPaths.h"
@@ -20,6 +21,73 @@
 #include "Core/MemTools.h"
 #include "Core/PatchEngine.h"
 #include "Core/PowerPC/PowerPC.h"
+
+// Tournament module loader (tournament-reporter design.md, vanilla-ISO
+// architecture). tournament.bin (melee tools/build_module.py) is the kiosk's
+// code linked at a fixed address against the stock GALE01 v1.02 symbol map:
+//   "TMOD" u32 version=1 u32 load_addr u32 blob_len u32 n_patches
+//   u32 guard_addr u32 guard_word, n_patches x {u32 addr, u32 value}, blob
+// Runs after the apploader has placed the DOL (and the FST / arena-top word at
+// 0x80000034) but before the first instruction: verify the guard word (a
+// vanilla instruction), copy the blob to load_addr (above the arena top the
+// game will adopt), apply the patch words, lower 0x80000034 to load_addr so
+// the heap stops below the module, invalidate the icache. Any problem logs
+// and leaves the game untouched. Nintendont does the same on hardware.
+static u32 ReadBE32(const std::string& d, size_t off)
+{
+	u32 v;
+	memcpy(&v, d.data() + off, 4);
+	return Common::swap32(v);
+}
+
+static void LoadTournamentModule()
+{
+	const std::string& path = SConfig::GetInstance().m_strSlippiTournamentModule;
+	if (path.empty())
+		return;
+	std::string d;
+	if (!File::ReadFileToString(path, d))
+	{
+		ERROR_LOG(BOOT, "Tournament module: cannot read %s", path.c_str());
+		return;
+	}
+	if (d.size() < 28 || d.compare(0, 4, "TMOD") != 0 || ReadBE32(d, 4) != 1)
+	{
+		ERROR_LOG(BOOT, "Tournament module: %s is not a TMOD v1 file", path.c_str());
+		return;
+	}
+	const u32 load = ReadBE32(d, 8), len = ReadBE32(d, 12), n = ReadBE32(d, 16);
+	const u32 gaddr = ReadBE32(d, 20), gword = ReadBE32(d, 24);
+	const size_t patches = 28, blob = 28 + (size_t)n * 8;
+	if (d.size() != blob + len)
+	{
+		ERROR_LOG(BOOT, "Tournament module: bad size (%u bytes, expected %u)", (u32)d.size(), (u32)(blob + len));
+		return;
+	}
+	if (PowerPC::HostRead_U32(gaddr) != gword)
+	{
+		ERROR_LOG(BOOT, "Tournament module: guard %08x != %08x at %08x - not stock Melee 1.02, not loaded",
+			PowerPC::HostRead_U32(gaddr), gword, gaddr);
+		return;
+	}
+	const u32 arena_hi = PowerPC::HostRead_U32(0x80000034);
+	if (arena_hi < load + len)
+	{
+		ERROR_LOG(BOOT, "Tournament module: arena top %08x below module end %08x", arena_hi, load + len);
+		return;
+	}
+	Memory::CopyToEmu(load, d.data() + blob, len);
+	for (u32 i = 0; i < n; i++)
+	{
+		const u32 addr = ReadBE32(d, patches + i * 8), val = ReadBE32(d, patches + i * 8 + 4);
+		PowerPC::HostWrite_U32(val, addr);
+		PowerPC::ppcState.iCache.Invalidate(addr);
+	}
+	PowerPC::HostWrite_U32(load, 0x80000034);
+	for (u32 a = load; a < load + len; a += 32)
+		PowerPC::ppcState.iCache.Invalidate(a);
+	NOTICE_LOG(BOOT, "Tournament module: %u bytes at %08x, %u patches, arena top %08x -> %08x", len, load, n, arena_hi, load);
+}
 
 #include "DiscIO/Enums.h"
 #include "DiscIO/Volume.h"
@@ -172,6 +240,10 @@ bool CBoot::EmulatedBS2_GC(bool skipAppLoader)
 
 	// return
 	PC = PowerPC::ppcState.gpr[3];
+
+	// Tournament module (see LoadTournamentModule above): the DOL is in RAM,
+	// nothing has run, gecko/patches come after.
+	LoadTournamentModule();
 
 	// Load patches
 	PatchEngine::LoadPatches();

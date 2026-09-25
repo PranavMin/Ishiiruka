@@ -174,6 +174,11 @@ struct SConfig : NonCopyable
 	// "host:port" of the LAN relay the EXI_RELAY_REQ/POLL commands are
 	// forwarded to. Empty = forwarder disabled; requests fail with RELAY_ERROR.
 	std::string m_strSlippiRelayAddr = "";
+	// Tournament module (tournament-reporter design.md, vanilla-ISO
+	// architecture): path of the tournament.bin the boot code copies into the
+	// game's RAM after the apploader has loaded a stock Melee 1.02 DOL. Empty =
+	// plain Melee.
+	std::string m_strSlippiTournamentModule = "";
 	bool m_meleeUserIniBootstrapped = false;
 	bool m_blockingPipes = false;
 	bool m_coutEnabled = false;
