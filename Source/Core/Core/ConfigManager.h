@@ -170,6 +170,10 @@ struct SConfig : NonCopyable
 	int m_slippiNetplayPort;
 	bool m_slippiForceLanIp = false;
 	std::string m_slippiLanIp = "";
+	// Tournament relay shared secret (tournament-reporter design.md R16): the
+	// relay's RELAY_SECRET, sent in a relay_auth block ahead of every forwarded
+	// request. Empty = every request answers "no relay secret set" locally.
+	std::string m_strSlippiRelaySecret = "";
 	// Tournament module (tournament-reporter design.md, vanilla-ISO
 	// architecture): path of the tournament.bin the boot code copies into the
 	// game's RAM after the apploader has loaded a stock Melee 1.02 DOL. Empty =

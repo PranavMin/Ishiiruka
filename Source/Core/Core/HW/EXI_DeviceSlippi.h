@@ -308,6 +308,7 @@ class CEXISlippi : public IEXIDevice
 	bool relayHasWork = false;
 	u32 relayWorkIp = 0;          // relayIp/relayPort captured at dispatch
 	u16 relayWorkPort = 0;
+	std::string relayWorkSecret;  // SlippiRelaySecret captured at dispatch (design R16)
 	std::vector<u8> relayWorkBuf; // request handed to the thread
 	u8 relayState = 0;            // enum exi_poll_state (0 = RELAY_IDLE)
 	std::vector<u8> relayRespBuf; // relay_hdr + relay_resp + payload from the relay

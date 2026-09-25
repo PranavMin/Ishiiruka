@@ -3655,15 +3655,27 @@ void CEXISlippi::DMARead(u32 addr, u32 size)
 // valid beacon wins. Until one arrives a request answers ST_INTERNAL "no relay
 // found yet", as on hardware. On Windows the first run may raise a firewall
 // prompt for Dolphin receiving on UDP 7778; allow it on private networks.
+//
+// Every forwarded request starts with a relay_auth block carrying the
+// SlippiRelaySecret setting (design R16), as the kernel does with
+// tournament.cfg's secret=. Empty setting: "no relay secret set", locally.
 
 // One TCP round trip: connect, send the request buffer, read the response
 // until the relay closes the connection (the relay serves one request per
 // connection and ends the socket after its response), all within a single
 // 3 second budget. Any failure is RELAY_ERROR.
-static bool relayDoRequest(u32 ip, u16 port, const std::vector<u8> &req, std::vector<u8> *resp)
+static bool relayDoRequest(u32 ip, u16 port, const std::string &secret, const std::vector<u8> &req,
+                           std::vector<u8> *resp)
 {
 	const sf::IpAddress host(ip);
 	const std::string addr = host.toString() + ":" + std::to_string(port);
+
+	// relay_auth {magic 'M','K', u16 pad, char secret[SECRET_LEN]} then the request.
+	std::vector<u8> out(sizeof(struct relay_auth), 0);
+	out[0] = AUTH_MAGIC_0;
+	out[1] = AUTH_MAGIC_1;
+	memcpy(&out[4], secret.data(), std::min<size_t>(secret.size(), SECRET_LEN));
+	out.insert(out.end(), req.begin(), req.end());
 
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 	auto remainingMs = [&]() {
@@ -3678,7 +3690,7 @@ static bool relayDoRequest(u32 ip, u16 port, const std::vector<u8> &req, std::ve
 		ERROR_LOG(SLIPPI, "Relay: connect to %s failed", addr.c_str());
 		return false;
 	}
-	if (socket.send(req.data(), req.size()) != sf::Socket::Done)
+	if (socket.send(out.data(), out.size()) != sf::Socket::Done)
 	{
 		ERROR_LOG(SLIPPI, "Relay: send to %s failed", addr.c_str());
 		return false;
@@ -3821,6 +3833,13 @@ void CEXISlippi::relayDispatchRequest()
 		ERROR_LOG(SLIPPI, "Relay: request while busy, dropped");
 		return;
 	}
+	const std::string secret = SConfig::GetInstance().m_strSlippiRelaySecret;
+	if (secret.empty())
+	{
+		relayRespBuf = relaySynthResponse(relayReqBuf, "no relay secret set");
+		relayState = RELAY_DONE;
+		return;
+	}
 	if (relayIp == 0)
 	{
 		// No beacon heard yet: answer like the kernel does, without a socket.
@@ -3828,6 +3847,7 @@ void CEXISlippi::relayDispatchRequest()
 		relayState = RELAY_DONE;
 		return;
 	}
+	relayWorkSecret = secret;
 	relayWorkIp = relayIp;
 	relayWorkPort = relayPort;
 	relayWorkBuf = relayReqBuf;
@@ -3850,11 +3870,12 @@ void CEXISlippi::relayThreadFunc()
 		relayHasWork = false;
 		const u32 ip = relayWorkIp;
 		const u16 port = relayWorkPort;
+		const std::string secret = relayWorkSecret;
 		std::vector<u8> req = std::move(relayWorkBuf);
 		lock.unlock();
 
 		std::vector<u8> resp;
-		bool ok = relayDoRequest(ip, port, req, &resp);
+		bool ok = relayDoRequest(ip, port, secret, req, &resp);
 
 		lock.lock();
 		relayRespBuf = std::move(resp);
