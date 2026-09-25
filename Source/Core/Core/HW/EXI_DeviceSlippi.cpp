@@ -247,6 +247,10 @@ CEXISlippi::~CEXISlippi()
 	{
 		relayThread.join();
 	}
+	if (relayBeaconThread.joinable())
+	{
+		relayBeaconThread.join(); // wakes within its 200 ms selector wait
+	}
 	m_slippiserver->endGame(true);
 
 	// Try to determine whether we were playing an in-progress ranked match, if so
@@ -3644,26 +3648,22 @@ void CEXISlippi::DMARead(u32 addr, u32 size)
 // forwarder ships the request to the relay over TCP on a worker thread (the
 // EXI handlers never block) and mirrors Nintendont's four-state machine:
 // RELAY_IDLE/BUSY/DONE/ERROR. One code path, no retries.
+//
+// The relay's address is not configured: like the Nintendont kernel
+// (RelayEXI.c serviceBeacon), a listener thread takes it from the relay's UDP
+// relay_beacon on BEACON_PORT (tournament-reporter design.md R15), latest
+// valid beacon wins. Until one arrives a request answers ST_INTERNAL "no relay
+// found yet", as on hardware. On Windows the first run may raise a firewall
+// prompt for Dolphin receiving on UDP 7778; allow it on private networks.
 
 // One TCP round trip: connect, send the request buffer, read the response
 // until the relay closes the connection (the relay serves one request per
 // connection and ends the socket after its response), all within a single
 // 3 second budget. Any failure is RELAY_ERROR.
-// ip/port receive the resolved relay address (host order) for exi_poll_hdr, as
-// far as the address parsed; they stay 0 when it did not.
-static bool relayDoRequest(const std::string &addr, const std::vector<u8> &req, std::vector<u8> *resp,
-                           u32 *ip, u16 *port_out)
+static bool relayDoRequest(u32 ip, u16 port, const std::vector<u8> &req, std::vector<u8> *resp)
 {
-	auto colon = addr.rfind(':');
-	unsigned long port = colon == std::string::npos ? 0 : strtoul(addr.c_str() + colon + 1, nullptr, 10);
-	if (colon == std::string::npos || colon == 0 || port == 0 || port > 65535)
-	{
-		ERROR_LOG(SLIPPI, "Relay: bad SlippiRelayAddress '%s', want host:port", addr.c_str());
-		return false;
-	}
-	std::string host = addr.substr(0, colon);
-	*port_out = static_cast<u16>(port);
-	*ip = sf::IpAddress(host).toInteger();
+	const sf::IpAddress host(ip);
+	const std::string addr = host.toString() + ":" + std::to_string(port);
 
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
 	auto remainingMs = [&]() {
@@ -3672,7 +3672,7 @@ static bool relayDoRequest(const std::string &addr, const std::vector<u8> &req, 
 	};
 
 	sf::TcpSocket socket;
-	if (socket.connect(host, static_cast<unsigned short>(port),
+	if (socket.connect(host, port,
 	                   sf::milliseconds(static_cast<int>(remainingMs()))) != sf::Socket::Done)
 	{
 		ERROR_LOG(SLIPPI, "Relay: connect to %s failed", addr.c_str());
@@ -3709,6 +3709,67 @@ static bool relayDoRequest(const std::string &addr, const std::vector<u8> &req, 
 	}
 }
 
+// A kernel-style failure the game shows as text (Nintendont RelayEXI.c
+// synthResponse): relay_hdr echoing the request with len = relay_resp, then
+// relay_resp {status ST_INTERNAL, pad, msg}. Big-endian on the wire, so the
+// u16 len is written byte by byte.
+static std::vector<u8> relaySynthResponse(const std::vector<u8> &req, const char *msg)
+{
+	std::vector<u8> out(sizeof(struct relay_hdr) + sizeof(struct relay_resp), 0);
+	memcpy(out.data(), req.data(), sizeof(struct relay_hdr));
+	out[6] = static_cast<u8>(sizeof(struct relay_resp) >> 8);
+	out[7] = static_cast<u8>(sizeof(struct relay_resp));
+	out[sizeof(struct relay_hdr)] = ST_INTERNAL;
+	strncpy(reinterpret_cast<char *>(&out[sizeof(struct relay_hdr) + 2]), msg, MSG_LEN);
+	return out;
+}
+
+void CEXISlippi::relayBeaconThreadFunc()
+{
+	sf::UdpSocket socket;
+	if (socket.bind(BEACON_PORT) != sf::Socket::Done)
+	{
+		ERROR_LOG(SLIPPI, "Relay: cannot listen for relay beacons on udp %u (port in use?)", BEACON_PORT);
+		return;
+	}
+	NOTICE_LOG(SLIPPI, "Relay: listening for relay beacons on udp %u", BEACON_PORT);
+	sf::SocketSelector selector;
+	selector.add(socket);
+	for (;;)
+	{
+		{
+			std::lock_guard<std::mutex> lock(relayMutex);
+			if (relayShutdown)
+				return;
+		}
+		if (!selector.wait(sf::milliseconds(200)))
+			continue;
+		u8 buf[64];
+		std::size_t got = 0;
+		sf::IpAddress from;
+		unsigned short fromPort = 0;
+		if (socket.receive(buf, sizeof(buf), got, from, fromPort) != sf::Socket::Done)
+			continue;
+		// Exactly one relay_beacon: magic, version, tcp_port (big-endian u16 at 4),
+		// event_id (big-endian u32 at 8). Anything else on the port is ignored.
+		if (got != sizeof(struct relay_beacon) || buf[0] != RELAY_MAGIC_0 || buf[1] != RELAY_MAGIC_1 ||
+		    buf[2] != RELAY_PROTO_VERSION)
+			continue;
+		const u16 tcpPort = static_cast<u16>((buf[4] << 8) | buf[5]);
+		const u32 eventId = (u32(buf[8]) << 24) | (u32(buf[9]) << 16) | (u32(buf[10]) << 8) | u32(buf[11]);
+		const u32 ip = from.toInteger();
+		if (tcpPort == 0 || ip == 0)
+			continue;
+		std::lock_guard<std::mutex> lock(relayMutex);
+		if (ip != relayIp || tcpPort != relayPort)
+		{
+			NOTICE_LOG(SLIPPI, "Relay: relay is %s:%u (event %u)", from.toString().c_str(), tcpPort, eventId);
+			relayIp = ip;
+			relayPort = tcpPort;
+		}
+	}
+}
+
 void CEXISlippi::ImmWrite(u32 _uData, u32 _uSize)
 {
 	// Slippi's own commands only ever arrive through DMAWrite (TransferByte
@@ -3722,6 +3783,10 @@ void CEXISlippi::ImmWrite(u32 _uData, u32 _uSize)
 	u8 cmd = static_cast<u8>(_uData >> 24);
 	if (relayExiCmd == 0 && _uSize == 4 && (cmd == EXI_RELAY_REQ || cmd == EXI_RELAY_POLL))
 	{
+		// The kiosk module is running: start finding the relay. CPU thread
+		// only, so no lock for the joinable check.
+		if (!relayBeaconThread.joinable())
+			relayBeaconThread = std::thread(&CEXISlippi::relayBeaconThreadFunc, this);
 		relayExiCmd = cmd;
 		relayReqBuf.clear();
 		return;
@@ -3742,12 +3807,10 @@ void CEXISlippi::SetCS(int _iCS)
 
 void CEXISlippi::relayDispatchRequest()
 {
-	std::string addr = SConfig::GetInstance().m_strSlippiRelayAddr;
 	std::unique_lock<std::mutex> lock(relayMutex);
-	if (addr.empty() || relayReqBuf.size() < sizeof(struct relay_hdr))
+	if (relayReqBuf.size() < sizeof(struct relay_hdr))
 	{
-		ERROR_LOG(SLIPPI, "Relay: %s",
-		          addr.empty() ? "SlippiRelayAddress not set" : "request shorter than relay_hdr");
+		ERROR_LOG(SLIPPI, "Relay: request shorter than relay_hdr");
 		relayState = RELAY_ERROR;
 		relayRespBuf.clear();
 		return;
@@ -3758,7 +3821,15 @@ void CEXISlippi::relayDispatchRequest()
 		ERROR_LOG(SLIPPI, "Relay: request while busy, dropped");
 		return;
 	}
-	relayWorkAddr = std::move(addr);
+	if (relayIp == 0)
+	{
+		// No beacon heard yet: answer like the kernel does, without a socket.
+		relayRespBuf = relaySynthResponse(relayReqBuf, "no relay found yet");
+		relayState = RELAY_DONE;
+		return;
+	}
+	relayWorkIp = relayIp;
+	relayWorkPort = relayPort;
 	relayWorkBuf = relayReqBuf;
 	relayState = RELAY_BUSY;
 	relayHasWork = true;
@@ -3777,19 +3848,16 @@ void CEXISlippi::relayThreadFunc()
 		if (relayShutdown)
 			return;
 		relayHasWork = false;
-		std::string addr = relayWorkAddr;
+		const u32 ip = relayWorkIp;
+		const u16 port = relayWorkPort;
 		std::vector<u8> req = std::move(relayWorkBuf);
 		lock.unlock();
 
 		std::vector<u8> resp;
-		u32 ip = 0;
-		u16 port = 0;
-		bool ok = relayDoRequest(addr, req, &resp, &ip, &port);
+		bool ok = relayDoRequest(ip, port, req, &resp);
 
 		lock.lock();
 		relayRespBuf = std::move(resp);
-		relayIp = ip;
-		relayPort = port;
 		relayState = ok ? RELAY_DONE : RELAY_ERROR;
 	}
 }
@@ -3799,8 +3867,8 @@ void CEXISlippi::prepareRelayPollRead(u32 addr, u32 size)
 	// Read-back layout is lbRelayExi_PollBuf (melee decomp lbrelayexi.h):
 	// exi_poll_hdr {u8 state, u8 pad, u16 station, u32 relay_ip, u16 relay_port,
 	// u16 pad} (protocol.yaml), then the response bytes. Station is 0 in
-	// Dolphin (design R10); the relay address is the one the last request
-	// resolved. The response stays valid until the next request overwrites it.
+	// Dolphin (design R10); the relay address is the latest beacon's, 0 until
+	// one is heard. The response stays valid until the next request overwrites it.
 	if (size == 0)
 		return;
 	std::vector<u8> out(size, 0);

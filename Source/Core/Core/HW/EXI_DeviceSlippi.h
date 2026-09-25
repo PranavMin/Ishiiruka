@@ -300,20 +300,23 @@ class CEXISlippi : public IEXIDevice
 	u8 relayExiCmd = 0;           // exi_cmd of the current EXI transaction, 0 = none
 	std::vector<u8> relayReqBuf;  // request bytes accumulated from EXIImmEx
 	std::thread relayThread;
+	std::thread relayBeaconThread; // listens for relay_beacon on BEACON_PORT (design R15)
 	std::mutex relayMutex;
 	std::condition_variable relayCondVar;
 	// All of the below are guarded by relayMutex.
 	bool relayShutdown = false;
 	bool relayHasWork = false;
-	std::string relayWorkAddr;    // SlippiRelayAddress captured at dispatch
+	u32 relayWorkIp = 0;          // relayIp/relayPort captured at dispatch
+	u16 relayWorkPort = 0;
 	std::vector<u8> relayWorkBuf; // request handed to the thread
 	u8 relayState = 0;            // enum exi_poll_state (0 = RELAY_IDLE)
 	std::vector<u8> relayRespBuf; // relay_hdr + relay_resp + payload from the relay
-	u32 relayIp = 0;              // exi_poll_hdr.relay_ip: the resolved IPv4 of SlippiRelayAddress (host order)
-	u16 relayPort = 0;            // exi_poll_hdr.relay_port
+	u32 relayIp = 0;              // the relay per the latest valid relay_beacon (source IPv4, host order); 0 = none heard
+	u16 relayPort = 0;            // its tcp_port; both also go out in exi_poll_hdr
 
 	void relayDispatchRequest();
 	void relayThreadFunc();
+	void relayBeaconThreadFunc();
 	void prepareRelayPollRead(u32 addr, u32 size);
 
 	// helper functions
