@@ -12,6 +12,12 @@ VENUE = [  # (ini title, bin, enabled)
     ("Venue: UCF 0.84 [Nintendont MeleeCodes cfOptionUcf084]", "g_ucf_084.bin", True),
     ("Venue: Tournament Mods [Nintendont MeleeCodes modsOptionTournament]", "g_mods_tournament.bin", True),
     ("Venue: Frozen Pokemon Stadium [Nintendont MeleeCodes stagesOptionStadium]", "g_stages_stadium.bin", False),
+    # Slippi Nintendont applies its whole core codeset (g_core.bin) on every
+    # Wii; Dolphin brings its own Slippi codes instead, so g_core is not
+    # converted - except this one line, which changes the boot target and so
+    # must be present for the dev loop to boot like hardware (the kiosk booted
+    # to the CSS on the first Wii run, 2026-09-30, until tm_bootOnLeave).
+    ("Venue: Slippi core boot-to-CSS [Nintendont g_core.bin 04 801BFA20]", ("g_core.bin", 0x041BFA20), True),
 ]
 
 def bin_to_lines(path):
@@ -21,6 +27,16 @@ def bin_to_lines(path):
         a, v = struct.unpack(">II", b[i:i + 8])
         out.append(f"{a:08X} {v:08X}")
     return out
+
+
+def code_lines(src):
+    """A whole .bin, or (bin, first word) = one 8-byte code picked from it."""
+    if isinstance(src, str):
+        return bin_to_lines(os.path.join(GECKO, src))
+    name, word = src
+    hits = [l for l in bin_to_lines(os.path.join(GECKO, name)) if l.startswith(f"{word:08X} ")]
+    assert len(hits) == 1, f"{name}: expected one {word:08X} code, found {len(hits)}"
+    return hits
 
 ini = subprocess.run(["git", "-C", ISH, "show", f"{UPSTREAM}:Data/Sys/GameSettings/GALE01r2.ini"],
                      capture_output=True, text=True).stdout
@@ -50,7 +66,7 @@ out.append("# --- (tournament-reporter design.md, vanilla-ISO architecture). Reg
 out.append("# --- with tools/make_venue_ini.py; do not hand-edit the code lines.")
 for title, name, _ in VENUE:
     out.append("$" + title)
-    out.extend(bin_to_lines(os.path.join(GECKO, name)))
+    out.extend(code_lines(name))
 text = "\n".join(out) + "\n"
 for dst in [os.path.join(ISH, "Data", "Sys", "GameSettings", "GALE01r2.ini"),
             os.path.join(ISH, "Binary", "x64", "Sys", "GameSettings", "GALE01r2.ini")]:
