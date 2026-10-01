@@ -1,6 +1,6 @@
 # LazyTO — Slippi Dolphin (development)
 
-This is the [LazyTO](https://github.com/PranavMin/tournament-reporter) fork of
+This is the [LazyTO](https://github.com/PranavMin/lazyto) fork of
 [Slippi Ishiiruka](https://github.com/project-slippi/Ishiiruka). LazyTO lets players at a Melee
 weekly pick, play and report their start.gg sets from the Wii itself.
 
@@ -11,7 +11,7 @@ The forwarder finds the relay by its UDP beacon and sends the secret from the
 
 | LazyTO repo | Role |
 |---|---|
-| [tournament-reporter](https://github.com/PranavMin/tournament-reporter) | Relay on the venue's Raspberry Pi; design docs and setup guides |
+| [lazyto](https://github.com/PranavMin/lazyto) | Relay on the venue's Raspberry Pi; design docs and setup guides |
 | [melee](https://github.com/PranavMin/melee) | `tournament.bin`, the kiosk module |
 | [Nintendont](https://github.com/PranavMin/Nintendont) | Wii loader |
 | **Ishiiruka** (this repo) | Dolphin with the relay forwarder |
