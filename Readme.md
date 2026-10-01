@@ -1,16 +1,10 @@
-# Archived: LazyTO's Dolphin development setup
-
-This fork was the development setup for the [LazyTO](https://github.com/PranavMin/LazyTO) kiosk: a Slippi Dolphin with a relay forwarder, so the kiosk module could be tested without a Wii. LazyTO's public builds never used it, and it is no longer maintained. Everything LazyTO ships is in [PranavMin/LazyTO](https://github.com/PranavMin/LazyTO) and [PranavMin/Nintendont](https://github.com/PranavMin/Nintendont).
-
----
-
 # LazyTO — Slippi Dolphin (development)
 
 This is the [LazyTO](https://github.com/PranavMin/LazyTO) fork of
 [Slippi Ishiiruka](https://github.com/project-slippi/Ishiiruka). LazyTO lets players at a Melee
 weekly pick, play and report their start.gg sets from the Wii itself.
 
-This fork exists for development only. It adds a **relay forwarder** to the Slippi EXI device,
+This fork is LazyTO's development setup, for working on the kiosk module without a Wii. It is not part of what a venue installs. It adds a **relay forwarder** to the Slippi EXI device,
 so the kiosk module can be run and tested in Dolphin against the LazyTO relay without a Wii.
 The forwarder finds the relay by its UDP beacon and sends the secret from the
 `SlippiRelaySecret` setting. Venues never run this build. Branch: `vanilla-module`.
