@@ -1,3 +1,25 @@
+# LazyTO — Slippi Dolphin (development)
+
+This is the [LazyTO](https://github.com/PranavMin/tournament-reporter) fork of
+[Slippi Ishiiruka](https://github.com/project-slippi/Ishiiruka). LazyTO lets players at a Melee
+weekly pick, play and report their start.gg sets from the Wii itself.
+
+This fork exists for development only. It adds a **relay forwarder** to the Slippi EXI device,
+so the kiosk module can be run and tested in Dolphin against the LazyTO relay without a Wii.
+The forwarder finds the relay by its UDP beacon and sends the secret from the
+`SlippiRelaySecret` setting. Venues never run this build. Branch: `vanilla-module`.
+
+| LazyTO repo | Role |
+|---|---|
+| [tournament-reporter](https://github.com/PranavMin/tournament-reporter) | Relay on the venue's Raspberry Pi; design docs and setup guides |
+| [melee](https://github.com/PranavMin/melee) | `tournament.bin`, the kiosk module |
+| [Nintendont](https://github.com/PranavMin/Nintendont) | Wii loader |
+| **Ishiiruka** (this repo) | Dolphin with the relay forwarder |
+
+Upstream is merged periodically from `project-slippi/Ishiiruka` `slippi`. Upstream's README follows.
+
+---
+
 # Dolphin - A GameCube and Wii Emulator
 
 [Homepage](https://dolphin-emu.org/) | [Project Site](https://github.com/dolphin-emu/dolphin) | [Forums](https://forums.dolphin-emu.org/) | [Wiki](https://wiki.dolphin-emu.org/) | [Issue Tracker](https://bugs.dolphin-emu.org/projects/emulator/issues) | [Coding Style](https://github.com/dolphin-emu/dolphin/blob/master/Contributing.md) | [Transifex Page](https://www.transifex.com/projects/p/dolphin-emu/)
