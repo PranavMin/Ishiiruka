@@ -3659,7 +3659,7 @@ void CEXISlippi::DMARead(u32 addr, u32 size)
 // relay_beacon on BEACON_PORT (tournament-reporter design.md R15), latest
 // valid beacon wins. Until one arrives a request answers ST_INTERNAL "no relay
 // found yet", as on hardware. On Windows the first run may raise a firewall
-// prompt for Dolphin receiving on UDP 7778; allow it on private networks.
+// prompt for Dolphin receiving on UDP 29471; allow it on private networks.
 //
 // Every forwarded request starts with a relay_auth block carrying the
 // SlippiRelaySecret setting (design R16), as the kernel does with
