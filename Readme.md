@@ -1,3 +1,9 @@
+# Archived: LazyTO's Dolphin development setup
+
+This fork was the development setup for the [LazyTO](https://github.com/PranavMin/LazyTO) kiosk: a Slippi Dolphin with a relay forwarder, so the kiosk module could be tested without a Wii. LazyTO's public builds never used it, and it is no longer maintained. Everything LazyTO ships is in [PranavMin/LazyTO](https://github.com/PranavMin/LazyTO) and [PranavMin/Nintendont](https://github.com/PranavMin/Nintendont).
+
+---
+
 # LazyTO — Slippi Dolphin (development)
 
 This is the [LazyTO](https://github.com/PranavMin/LazyTO) fork of
