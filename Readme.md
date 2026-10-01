@@ -7,7 +7,7 @@ weekly pick, play and report their start.gg sets from the Wii itself.
 This fork is LazyTO's development setup, for working on the kiosk module without a Wii. It is not part of what a venue installs. It adds a **relay forwarder** to the Slippi EXI device,
 so the kiosk module can be run and tested in Dolphin against the LazyTO relay without a Wii.
 The forwarder finds the relay by its UDP beacon and sends the secret from the
-`SlippiRelaySecret` setting. Venues never run this build. Branch: `vanilla-module`.
+`SlippiRelaySecret` setting. Venues never run this build. Branch: `LazyTO`.
 
 | LazyTO repo | Role |
 |---|---|
